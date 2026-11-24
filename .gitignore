@@ -1,0 +1,10 @@
+# Built plugin packages
+*.cindy
+
+# Node
+node_modules/
+*.log
+
+# OS / editor
+.DS_Store
+Thumbs.db

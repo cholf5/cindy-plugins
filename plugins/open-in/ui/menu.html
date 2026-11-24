@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Open in</title>
+<style>
+  :root{color-scheme:light dark}
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:transparent}
+  body{font:13px/1.45 var(--font-sans,system-ui,-apple-system,"Segoe UI",sans-serif);color:var(--color-text-primary,CanvasText);-webkit-font-smoothing:antialiased}
+  .wrap{padding:2px;min-width:220px}
+  .head{display:flex;align-items:baseline;gap:8px;padding:4px 8px 6px;min-width:0}
+  .head .t{flex:none;font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--color-text-secondary,CanvasText);opacity:.75}
+  .head .path{flex:1;min-width:0;font-size:11px;color:var(--color-text-secondary,CanvasText);opacity:.7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:var(--font-mono,ui-monospace,SFMono-Regular,Menlo,monospace)}
+  .group{margin:2px 0 4px}
+  .group-title{font-size:10.5px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--color-text-secondary,CanvasText);opacity:.6;padding:5px 9px 3px}
+  .row{display:flex;align-items:center;gap:10px;width:100%;padding:7px 8px;border:0;border-radius:8px;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;transition:background .12s ease}
+  .row:hover,.row:focus-visible{background:var(--color-background-secondary,rgba(127,127,127,.14));outline:none}
+  .row:focus-visible{box-shadow:inset 0 0 0 1px var(--color-border-primary,rgba(127,127,127,.45))}
+  .row:disabled{opacity:.45;cursor:default}
+  .row .ico{flex:none;display:grid;place-items:center;width:26px;height:26px;border-radius:7px;background:var(--color-background-secondary,rgba(127,127,127,.14));color:var(--color-text-secondary,CanvasText)}
+  .row .lbl{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .row .meta{flex:none;font-size:11px;color:var(--color-text-secondary,CanvasText);opacity:.55}
+  .row[aria-busy="true"] .meta{opacity:1}
+  .status{padding:5px 9px 3px;font-size:12px;color:var(--color-text-secondary,CanvasText);min-height:16px;overflow-wrap:anywhere}
+  .status.ok{color:#1f7a4d}
+  .status.error{color:#c0392b}
+  :root[data-theme="dark"] .status.ok{color:#7bd88f}
+  :root[data-theme="dark"] .status.error{color:#ff958b}
+  .empty{padding:12px 9px;font-size:12.5px;color:var(--color-text-secondary,CanvasText);line-height:1.5}
+  .retry{margin:0 4px;padding:4px 10px;border:1px solid var(--color-border-primary,rgba(127,127,127,.35));border-radius:7px;background:transparent;color:inherit;font:inherit;font-size:12px;cursor:pointer}
+  .retry:hover{background:var(--color-background-secondary,rgba(127,127,127,.14))}
+  .skeleton{height:34px;margin:4px 6px;border-radius:8px;background:var(--color-background-secondary,rgba(127,127,127,.12));animation:pulse 1.1s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:.45}50%{opacity:1}}
+  @media (prefers-reduced-motion: reduce){.skeleton{animation:none}.row{transition:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="head"><span class="t" id="head-title">Open in</span><span class="path" id="path" title=""></span></div>
+  <div id="list" role="menu" aria-labelledby="head-title"></div>
+  <div class="status" id="status" role="status"></div>
+</div>
+<script type="module">
+import { App } from '@modelcontextprotocol/ext-apps';
+
+const mcp = new App({ name: 'Open in', version: '1.0.0' }, {}, { autoResize: true });
+const controller = new AbortController();
+const listEl = document.querySelector('#list');
+const statusEl = document.querySelector('#status');
+const pathEl = document.querySelector('#path');
+const headTitle = document.querySelector('#head-title');
+
+const ICONS = {
+  editor: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18-6-6 6-6"/><path d="m15 6 6 6-6 6"/></svg>',
+  terminal: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 17 6-6-6-6"/><path d="M12 19h8"/></svg>',
+  files: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
+};
+
+const STRINGS = {
+  en: {
+    title: 'Open in', noFolder: 'This task has no project folder yet.',
+    loading: 'Checking installed apps…', none: 'No compatible app was found on this computer.',
+    listFailed: 'Could not read installed apps.', nodeMissing: 'The plugin worker is unavailable. Reopen the menu and try again.',
+    opening: 'Opening {app}…', opened: 'Opened in {app}.',
+    openFailed: 'Could not open the folder in {app}.', dirMissing: 'This folder is not available on this computer.',
+    appGone: 'That app is no longer available.', retry: 'Retry', meta: 'Open',
+    editors: 'Editors & IDEs', terminals: 'Terminals', files: 'File manager',
+  },
+  zh: {
+    title: 'Open in', noFolder: '当前任务还没有项目目录。',
+    loading: '正在检测已安装的应用…', none: '没有找到可用于打开目录的应用。',
+    listFailed: '读取已安装应用失败。', nodeMissing: '插件工作进程不可用，请重新打开菜单再试。',
+    opening: '正在用 {app} 打开…', opened: '已在 {app} 中打开。',
+    openFailed: '无法用 {app} 打开该目录。', dirMissing: '该目录在这台电脑上不存在。',
+    appGone: '这个应用已不可用。', retry: '重试', meta: '打开',
+    editors: '编辑器与 IDE', terminals: '终端', files: '文件管理器',
+  },
+};
+
+const GROUP_ORDER = [['editor', 'editors'], ['terminal', 'terminals'], ['files', 'files']];
+
+let context = {};
+let locale = 'en';
+let t = STRINGS.en;
+let dir = null;
+let appList = [];
+let loaded = false;
+let busy = false;
+
+function fmt(template, values) {
+  return String(template).replace(/\{(\w+)\}/g, (_, key) => (values && key in values ? String(values[key]) : ''));
+}
+
+function pickLocale(raw) {
+  return String(raw || '').toLowerCase().startsWith('zh') ? 'zh' : 'en';
+}
+
+function currentDir() {
+  const value = context.cindy && context.cindy.context && context.cindy.context.task
+    ? context.cindy.context.task.workingDir : null;
+  return typeof value === 'string' && value ? value : null;
+}
+
+function applyTheme() {
+  if (context.theme) {
+    document.documentElement.style.colorScheme = context.theme;
+    document.documentElement.dataset.theme = context.theme;
+  }
+  for (const [key, value] of Object.entries((context.styles && context.styles.variables) || {})) {
+    document.documentElement.style.setProperty(key, value);
+  }
+}
+
+/** 工具结果同时带 structuredContent 和 JSON 文本；任一可用即可。 */
+function resultData(result) {
+  if (result && result.structuredContent && typeof result.structuredContent === 'object') {
+    return result.structuredContent;
+  }
+  const blocks = result && Array.isArray(result.content) ? result.content : [];
+  const text = blocks.find((block) => block && block.type === 'text' && typeof block.text === 'string');
+  if (!text) return null;
+  try {
+    return JSON.parse(text.text);
+  } catch {
+    return null;
+  }
+}
+
+function setStatus(message, tone) {
+  statusEl.textContent = message || '';
+  statusEl.className = 'status' + (tone ? ' ' + tone : '');
+}
+
+function setRowsDisabled(disabled) {
+  for (const button of listEl.querySelectorAll('.row')) button.disabled = disabled;
+}
+
+function renderHead() {
+  headTitle.textContent = t.title;
+  pathEl.textContent = dir || '';
+  pathEl.title = dir || '';
+}
+
+function renderEmpty(message, withRetry) {
+  listEl.replaceChildren();
+  const empty = document.createElement('div');
+  empty.className = 'empty';
+  empty.textContent = message;
+  listEl.append(empty);
+  if (withRetry) {
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.className = 'retry';
+    retry.textContent = t.retry;
+    retry.onclick = () => void loadApps();
+    empty.append(document.createElement('br'), retry);
+  }
+}
+
+function renderSkeleton() {
+  listEl.replaceChildren();
+  for (let index = 0; index < 3; index += 1) {
+    const row = document.createElement('div');
+    row.className = 'skeleton';
+    listEl.append(row);
+  }
+}
+
+function renderApps() {
+  listEl.replaceChildren();
+  if (!appList.length) {
+    renderEmpty(t.none, true);
+    return;
+  }
+  let firstRow = null;
+  for (const [group, labelKey] of GROUP_ORDER) {
+    const items = appList.filter((item) => item.group === group);
+    if (!items.length) continue;
+    const section = document.createElement('div');
+    section.className = 'group';
+    const heading = document.createElement('div');
+    heading.className = 'group-title';
+    heading.textContent = t[labelKey];
+    section.append(heading);
+    for (const item of items) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'row';
+      button.setAttribute('role', 'menuitem');
+      button.dataset.appId = item.id;
+      const icon = document.createElement('span');
+      icon.className = 'ico';
+      icon.innerHTML = ICONS[item.group] || ICONS.editor;
+      const label = document.createElement('span');
+      label.className = 'lbl';
+      label.textContent = item.label;
+      const meta = document.createElement('span');
+      meta.className = 'meta';
+      meta.textContent = t.meta;
+      button.append(icon, label, meta);
+      button.addEventListener('click', () => void openWith(item, button));
+      section.append(button);
+      if (!firstRow) firstRow = button;
+    }
+    listEl.append(section);
+  }
+  if (firstRow) firstRow.focus({ preventScroll: true });
+}
+
+async function loadApps() {
+  if (!dir) {
+    renderEmpty(t.noFolder, false);
+    setStatus('');
+    return;
+  }
+  loaded = false;
+  renderSkeleton();
+  setStatus(t.loading, '');
+  try {
+    const result = await mcp.callServerTool(
+      { name: 'list_apps', arguments: {} },
+      { timeout: 60 * 1000, maxTotalTimeout: 60 * 1000, signal: controller.signal },
+    );
+    const data = resultData(result);
+    if (result.isError || !data || !data.ok) {
+      throw Object.assign(new Error('LIST_FAILED'), { code: data && data.code });
+    }
+    appList = Array.isArray(data.apps) ? data.apps.filter((item) =>
+      item && typeof item.id === 'string' && typeof item.label === 'string' &&
+      ['editor', 'terminal', 'files'].includes(item.group)) : [];
+    loaded = true;
+    renderApps();
+    setStatus('');
+  } catch (error) {
+    if (controller.signal.aborted) return;
+    appList = [];
+    loaded = false;
+    const code = error && error.code;
+    renderEmpty(code === 'NODE_UNAVAILABLE' || code === 'TIMEOUT' ? t.nodeMissing : t.listFailed, true);
+    setStatus('');
+  }
+}
+
+function errorMessage(code, app) {
+  switch (code) {
+    case 'DIR_UNAVAILABLE': return t.dirMissing;
+    case 'APP_NOT_AVAILABLE': return t.appGone;
+    case 'NODE_UNAVAILABLE':
+    case 'PROCESS_START_FAILED':
+    case 'TIMEOUT': return t.nodeMissing;
+    default: return fmt(t.openFailed, { app: app.label });
+  }
+}
+
+async function openWith(app, button) {
+  if (busy || !dir) return;
+  busy = true;
+  setRowsDisabled(true);
+  button.setAttribute('aria-busy', 'true');
+  setStatus(fmt(t.opening, { app: app.label }), '');
+  try {
+    const result = await mcp.callServerTool(
+      { name: 'open_in', arguments: { app: app.id, path: dir } },
+      { timeout: 60 * 1000, maxTotalTimeout: 60 * 1000, signal: controller.signal },
+    );
+    const data = resultData(result);
+    if (result.isError || !data || !data.ok) {
+      throw Object.assign(new Error('OPEN_FAILED'), { code: data && data.code });
+    }
+    setStatus(fmt(t.opened, { app: app.label }), 'ok');
+  } catch (error) {
+    if (controller.signal.aborted) return;
+    setStatus(errorMessage(error && error.code, app), 'error');
+  } finally {
+    busy = false;
+    setRowsDisabled(false);
+    button.removeAttribute('aria-busy');
+  }
+}
+
+listEl.addEventListener('keydown', (event) => {
+  if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+  const rows = Array.from(listEl.querySelectorAll('.row:not(:disabled)'));
+  if (!rows.length) return;
+  event.preventDefault();
+  const index = rows.indexOf(document.activeElement);
+  const next = event.key === 'ArrowDown' ? Math.min(index + 1, rows.length - 1) : Math.max(index - 1, 0);
+  rows[next].focus({ preventScroll: true });
+});
+
+function update() {
+  context = mcp.getHostContext() || {};
+  applyTheme();
+  const nextLocale = pickLocale(context.locale);
+  const nextT = STRINGS[nextLocale] || STRINGS.en;
+  const languageChanged = nextLocale !== locale;
+  locale = nextLocale;
+  t = nextT;
+  const nextDir = currentDir();
+  const dirChanged = nextDir !== dir;
+  dir = nextDir;
+  renderHead();
+  if (!loaded || languageChanged || dirChanged) {
+    void loadApps();
+  }
+}
+
+mcp.onhostcontextchanged = update;
+mcp.onteardown = async () => {
+  controller.abort();
+  return {};
+};
+
+try {
+  await mcp.connect();
+  update();
+} catch {
+  renderHead();
+  renderEmpty(t.nodeMissing, false);
+  setStatus('');
+}
+</script>
+</body>
+</html>

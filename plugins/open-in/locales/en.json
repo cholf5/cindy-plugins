@@ -1,0 +1,23 @@
+{
+  "name": "Open In",
+  "description": "Open the current project folder in your installed editors, IDEs, terminals and file manager from the task header.",
+  "whenToUse": "Use when the user wants to open the current task's project folder in VS Code, Cursor, another IDE, a terminal or the file manager. Local projects only; remote tasks are not supported.",
+  "tools": {
+    "list_apps": {
+      "description": "List installed apps on the executing computer that can open the project folder. Called only by the plugin menu page."
+    },
+    "open_in": {
+      "description": "Open the task's project folder in a specified installed app. Called only by the plugin menu page.",
+      "parameters": {
+        "/properties/app": {
+          "title": "App id",
+          "description": "An app id returned by list_apps."
+        },
+        "/properties/path": {
+          "title": "Project folder",
+          "description": "Absolute path of the current task's project folder."
+        }
+      }
+    }
+  }
+}
