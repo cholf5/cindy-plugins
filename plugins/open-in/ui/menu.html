@@ -88,6 +88,12 @@ let dir = null;
 let appList = [];
 let loaded = false;
 let busy = false;
+let inFlight = null;
+let inFlightDir = null;
+let loadSeq = 0;
+let renderedKey = '';
+const CACHE_KEY = 'open-in.apps.v1';
+const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 function fmt(template, values) {
   return String(template).replace(/\{(\w+)\}/g, (_, key) => (values && key in values ? String(values[key]) : ''));
@@ -95,6 +101,35 @@ function fmt(template, values) {
 
 function pickLocale(raw) {
   return String(raw || '').toLowerCase().startsWith('zh') ? 'zh' : 'en';
+}
+
+const APP_GROUPS = ['editor', 'terminal', 'files'];
+
+function sanitizeApps(apps) {
+  return (Array.isArray(apps) ? apps : [])
+    .filter((item) => item && typeof item.id === 'string' && typeof item.label === 'string' && APP_GROUPS.includes(item.group))
+    .map(({ id, label, group }) => ({ id, label, group }));
+}
+
+/** 上次成功检测到的应用列表；用于弹层再次打开时先出内容，再后台刷新。 */
+function readCachedApps() {
+  try {
+    const raw = localStorage.getItem(CACHE_KEY);
+    if (!raw) return [];
+    const data = JSON.parse(raw);
+    if (!data || data.v !== 1 || typeof data.at !== 'number' || Date.now() - data.at > CACHE_TTL_MS) return [];
+    return sanitizeApps(data.apps);
+  } catch {
+    return [];
+  }
+}
+
+function writeCachedApps(apps) {
+  try {
+    localStorage.setItem(CACHE_KEY, JSON.stringify({ v: 1, at: Date.now(), apps }));
+  } catch {
+    // 页面存储不可用时只是少一层加速，不影响功能。
+  }
 }
 
 function currentDir() {
@@ -144,6 +179,7 @@ function renderHead() {
 }
 
 function renderEmpty(message, withRetry) {
+  renderedKey = '';
   listEl.replaceChildren();
   const empty = document.createElement('div');
   empty.className = 'empty';
@@ -160,6 +196,7 @@ function renderEmpty(message, withRetry) {
 }
 
 function renderSkeleton() {
+  renderedKey = '';
   listEl.replaceChildren();
   for (let index = 0; index < 3; index += 1) {
     const row = document.createElement('div');
@@ -169,6 +206,9 @@ function renderSkeleton() {
 }
 
 function renderApps() {
+  const key = locale + '|' + appList.map((item) => `${item.id}:${item.group}`).join('|');
+  if (key === renderedKey && listEl.querySelector('.row')) return;
+  renderedKey = key;
   listEl.replaceChildren();
   if (!appList.length) {
     renderEmpty(t.none, true);
@@ -215,32 +255,48 @@ async function loadApps() {
     setStatus('');
     return;
   }
-  loaded = false;
-  renderSkeleton();
-  setStatus(t.loading, '');
-  try {
-    const result = await mcp.callServerTool(
-      { name: 'list_apps', arguments: {} },
-      { timeout: 60 * 1000, maxTotalTimeout: 60 * 1000, signal: controller.signal },
-    );
-    const data = resultData(result);
-    if (result.isError || !data || !data.ok) {
-      throw Object.assign(new Error('LIST_FAILED'), { code: data && data.code });
-    }
-    appList = Array.isArray(data.apps) ? data.apps.filter((item) =>
-      item && typeof item.id === 'string' && typeof item.label === 'string' &&
-      ['editor', 'terminal', 'files'].includes(item.group)) : [];
-    loaded = true;
-    renderApps();
-    setStatus('');
-  } catch (error) {
-    if (controller.signal.aborted) return;
-    appList = [];
-    loaded = false;
-    const code = error && error.code;
-    renderEmpty(code === 'NODE_UNAVAILABLE' || code === 'TIMEOUT' ? t.nodeMissing : t.listFailed, true);
-    setStatus('');
+  // 同一次打开可能收到多次上下文更新；共用同一个请求，避免重复检测。
+  if (inFlight && inFlightDir === dir) return inFlight;
+  const seq = ++loadSeq;
+  inFlightDir = dir;
+  const hadList = appList.length > 0;
+  if (!hadList) {
+    renderSkeleton();
+    setStatus(t.loading, '');
   }
+  inFlight = (async () => {
+    try {
+      const result = await mcp.callServerTool(
+        { name: 'list_apps', arguments: {} },
+        { timeout: 60 * 1000, maxTotalTimeout: 60 * 1000, signal: controller.signal },
+      );
+      const data = resultData(result);
+      if (result.isError || !data || !data.ok) {
+        throw Object.assign(new Error('LIST_FAILED'), { code: data && data.code });
+      }
+      if (seq !== loadSeq) return;
+      appList = sanitizeApps(data.apps);
+      loaded = true;
+      writeCachedApps(appList);
+      renderApps();
+      setStatus('');
+    } catch (error) {
+      if (controller.signal.aborted || seq !== loadSeq) return;
+      if (hadList) {
+        // 已有缓存列表时，后台刷新失败不打扰用户。
+        setStatus('');
+        return;
+      }
+      appList = [];
+      loaded = false;
+      const code = error && error.code;
+      renderEmpty(code === 'NODE_UNAVAILABLE' || code === 'TIMEOUT' ? t.nodeMissing : t.listFailed, true);
+      setStatus('');
+    } finally {
+      if (seq === loadSeq) inFlight = null;
+    }
+  })();
+  return inFlight;
 }
 
 function errorMessage(code, app) {
@@ -273,6 +329,13 @@ async function openWith(app, button) {
   } catch (error) {
     if (controller.signal.aborted) return;
     setStatus(errorMessage(error && error.code, app), 'error');
+    if (error && error.code === 'APP_NOT_AVAILABLE') {
+      // 应用已被卸载：从列表和缓存里移除，下次打开不会再显示。
+      appList = appList.filter((item) => item.id !== app.id);
+      writeCachedApps(appList);
+      renderedKey = '';
+      renderApps();
+    }
   } finally {
     busy = false;
     setRowsDisabled(false);
@@ -302,6 +365,7 @@ function update() {
   const dirChanged = nextDir !== dir;
   dir = nextDir;
   renderHead();
+  if (appList.length) renderApps();
   if (!loaded || languageChanged || dirChanged) {
     void loadApps();
   }
@@ -312,6 +376,10 @@ mcp.onteardown = async () => {
   controller.abort();
   return {};
 };
+
+// 先用上次的列表把菜单画出来，连上宿主后再后台刷新，重复打开时不再等检测。
+appList = readCachedApps();
+if (appList.length) renderApps();
 
 try {
   await mcp.connect();

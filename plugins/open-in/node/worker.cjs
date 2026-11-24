@@ -276,6 +276,29 @@ function detectApps() {
   return linuxApps();
 }
 
+// 菜单每次打开都会请求一次列表；检测本身要逐个探测路径，重复执行没有意义。
+// 进程内缓存一小段时间，并把 open_in 也接到同一份结果上（找不到应用时才强制重扫）。
+const DETECT_TTL_MS = 60 * 1000;
+let detectCache = null;
+
+function detectAppsCached(force) {
+  const now = Date.now();
+  if (!force && detectCache && now - detectCache.at < DETECT_TTL_MS) return detectCache.apps;
+  const apps = detectApps();
+  detectCache = { at: now, apps };
+  if (Date.now() - now >= 20) {
+    process.stderr.write(`[open-in] detect apps: ${apps.length} found in ${Date.now() - now}ms (${PLATFORM})\n`);
+  }
+  return apps;
+}
+
+// 常驻启动时先预热一次检测，第一个菜单请求直接命中缓存。
+try {
+  detectAppsCached(false);
+} catch {
+  // 预热失败不影响后续按需检测。
+}
+
 // ── Launch ──────────────────────────────────────────────────────────────────
 function launchDetached(command, args) {
   return new Promise((resolve, reject) => {
@@ -324,7 +347,7 @@ async function handle(method, params) {
     return {
       ok: true,
       platform: PLATFORM,
-      apps: detectApps().map(({ id, label, group }) => ({ id, label, group })),
+      apps: detectAppsCached(false).map(({ id, label, group }) => ({ id, label, group })),
     };
   }
 
@@ -332,13 +355,17 @@ async function handle(method, params) {
     if (typeof args.app !== 'string' || !args.app) return { ok: false, code: 'INVALID_ARGS' };
     const dir = validatedDirectory(args.path);
     if (!dir) return { ok: false, code: 'DIR_UNAVAILABLE' };
-    const app = detectApps().find((item) => item.id === args.app);
+    // 正常情况下直接复用列表结果，避免再次扫描；只有应用不在缓存里才重扫一次。
+    let app = detectAppsCached(false).find((item) => item.id === args.app);
+    if (!app) app = detectAppsCached(true).find((item) => item.id === args.app);
     if (!app) return { ok: false, code: 'APP_NOT_AVAILABLE' };
     try {
       const { command, args: spawnArgs } = app.run(dir);
       await launchDetached(command, spawnArgs);
       return { ok: true };
-    } catch {
+    } catch (error) {
+      // 应用刚被卸载/移动时启动会报 ENOENT，丢掉旧缓存让下次列表重新检测。
+      if (error && error.code === 'ENOENT') detectCache = null;
       return { ok: false, code: 'OPEN_FAILED' };
     }
   }
