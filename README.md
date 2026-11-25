@@ -10,7 +10,7 @@ Each plugin is self-contained, follows Cindy's light/dark themes and host locale
 
 | Plugin | What it does |
 | --- | --- |
-| **Open In** (`open-in`) | Adds an **Open in** menu to the task header. Opens the current project folder in an installed editor, IDE, terminal or file manager. Local projects only; remote tasks are hidden by Cindy. |
+| **Open In** (`open-in`) | Adds an **Open in** menu in the status bar under the composer. Opens the current project folder in an installed editor, IDE, terminal, Git client or file manager, or copies its path. Local projects only; remote tasks are hidden by Cindy. |
 
 See each plugin's own README for behavior, permissions and limitations:
 

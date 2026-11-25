@@ -71,13 +71,66 @@ function macAppBundle(names) {
   return null;
 }
 
+// 项目判定：C# 解决方案、Git 仓库。只做一次目录探测，供列表和启动共用。
+function solutionFiles(folder) {
+  let entries = [];
+  try {
+    entries = fs.readdirSync(folder);
+  } catch {
+    return [];
+  }
+  return entries
+    .filter((name) => /\.slnx?$/i.test(name) && isFile(path.join(folder, name)))
+    .sort();
+}
+
+// 根目录优先，其次 src/；与目录同名的解决方案优先，否则取第一个 .sln，再退 .slnx。
+function findSolutionFile(dir) {
+  const found = [];
+  for (const folder of [dir, path.join(dir, 'src')]) {
+    for (const name of solutionFiles(folder)) found.push({ name, file: path.join(folder, name) });
+  }
+  if (!found.length) return null;
+  const base = path.basename(dir).toLowerCase();
+  const named = found.find((item) => item.name.replace(/\.slnx?$/i, '').toLowerCase() === base);
+  if (named) return named.file;
+  const sln = found.find((item) => /\.sln$/i.test(item.name));
+  return (sln || found[0]).file;
+}
+
+function hasSolutionFile(dir) {
+  return findSolutionFile(dir) !== null;
+}
+
+// .git 在 git worktree / submodule 里也可能是文件而不是目录。
+function hasGitRepo(dir) {
+  try {
+    const dotGit = fs.statSync(path.join(dir, '.git'));
+    return dotGit.isDirectory() || dotGit.isFile();
+  } catch {
+    return false;
+  }
+}
+
+function projectFeatures(dir) {
+  if (!dir) return { csharp: false, git: false };
+  return { csharp: hasSolutionFile(dir), git: hasGitRepo(dir) };
+}
+
+function meetsRequirement(dir, requirement) {
+  if (requirement === 'csharp') return hasSolutionFile(dir);
+  if (requirement === 'git') return hasGitRepo(dir);
+  return false;
+}
+
 function macApps() {
   const editors = [];
   const terminals = [];
+  const gitClients = [];
   const files = [];
-  const addBundle = (bucket, id, label, names) => {
+  const addBundle = (bucket, id, label, names, extra) => {
     const bundle = macAppBundle(names);
-    if (bundle) bucket.push({ id, label, group: 'editor', run: (dir) => ({ command: '/usr/bin/open', args: ['-a', bundle, dir] }) });
+    if (bundle) bucket.push({ id, label, group: 'editor', ...extra, run: (dir) => ({ command: '/usr/bin/open', args: ['-a', bundle, dir] }) });
   };
   addBundle(editors, 'vscode', 'Visual Studio Code', ['Visual Studio Code', 'Visual Studio Code - Insiders']);
   addBundle(editors, 'cursor', 'Cursor', ['Cursor']);
@@ -90,6 +143,37 @@ function macApps() {
   addBundle(editors, 'pycharm', 'PyCharm', ['PyCharm', 'PyCharm Professional Edition', 'PyCharm CE', 'PyCharm Community Edition']);
   addBundle(editors, 'goland', 'GoLand', ['GoLand']);
   addBundle(editors, 'xcode', 'Xcode', ['Xcode']);
+  addBundle(editors, 'clion', 'CLion', ['CLion']);
+  addBundle(editors, 'phpstorm', 'PhpStorm', ['PhpStorm']);
+  addBundle(editors, 'rubymine', 'RubyMine', ['RubyMine']);
+  addBundle(editors, 'datagrip', 'DataGrip', ['DataGrip']);
+  addBundle(editors, 'dataspell', 'DataSpell', ['DataSpell']);
+  addBundle(editors, 'aqua', 'Aqua', ['Aqua']);
+  addBundle(editors, 'rustrover', 'RustRover', ['RustRover']);
+  addBundle(editors, 'fleet', 'Fleet', ['Fleet']);
+  addBundle(editors, 'android-studio', 'Android Studio', ['Android Studio']);
+  addBundle(editors, 'vscodium', 'VSCodium', ['VSCodium']);
+  addBundle(editors, 'trae', 'Trae', ['Trae']);
+  addBundle(editors, 'kiro', 'Kiro', ['Kiro']);
+  addBundle(editors, 'qoder', 'Qoder', ['Qoder']);
+  addBundle(editors, 'passenger', 'Passenger', ['Passenger'], { group: 'dotnet', requires: 'csharp' });
+
+  // Rider 直接打开解决方案文件；找不到时退回目录（正常情况下不会发生）。
+  const riderBundle = macAppBundle(['Rider', 'JetBrains Rider']);
+  if (riderBundle) {
+    editors.push({
+      id: 'rider',
+      label: 'Rider',
+      group: 'dotnet',
+      requires: 'csharp',
+      run: (dir) => ({ command: '/usr/bin/open', args: ['-a', riderBundle, findSolutionFile(dir) || dir] }),
+    });
+  }
+
+  const forkBundle = macAppBundle(['Fork']);
+  if (forkBundle) {
+    gitClients.push({ id: 'fork', label: 'Fork', group: 'git', requires: 'git', run: (dir) => ({ command: '/usr/bin/open', args: ['-a', forkBundle, dir] }) });
+  }
 
   const addTerminal = (id, label, names) => {
     const bundle = macAppBundle(names);
@@ -97,11 +181,27 @@ function macApps() {
   };
   addTerminal('terminal', 'Terminal', ['Terminal']);
   addTerminal('iterm', 'iTerm', ['iTerm', 'iTerm2']);
+  addTerminal('ghostty', 'Ghostty', ['Ghostty']);
+
+  // 这些终端自带 CLI，直接跑包内可执行文件才能可靠指定工作目录。
+  const addTerminalCli = (id, label, bundleName, binary, argsFor) => {
+    const bundle = macAppBundle([bundleName]);
+    if (!bundle) return;
+    const exe = path.join(bundle, 'Contents', 'MacOS', binary);
+    if (!isExecutable(exe)) return;
+    terminals.push({ id, label, group: 'terminal', run: (dir) => ({ command: exe, args: argsFor(dir) }) });
+  };
+  addTerminalCli('wezterm', 'WezTerm', 'WezTerm', 'wezterm', (dir) => ['start', '--cwd', dir]);
+  addTerminalCli('kitty', 'kitty', 'kitty', 'kitty', (dir) => ['--directory', dir]);
+  addTerminalCli('alacritty', 'Alacritty', 'Alacritty', 'alacritty', (dir) => ['--working-directory', dir]);
+
+  const comfortFiles = macAppBundle(['ComfortFiles']);
+  if (comfortFiles) files.push({ id: 'comfortfiles', label: 'ComfortFiles', group: 'files', run: (dir) => ({ command: '/usr/bin/open', args: ['-a', comfortFiles, dir] }) });
 
   if (isFile('/usr/bin/open')) {
     files.push({ id: 'finder', label: 'Finder', group: 'files', run: (dir) => ({ command: '/usr/bin/open', args: [dir] }) });
   }
-  return editors.concat(terminals, files);
+  return editors.concat(gitClients, terminals, files);
 }
 
 // ── Windows ─────────────────────────────────────────────────────────────────
@@ -152,7 +252,7 @@ function jetbrainsToolboxApps() {
         } catch {
           continue;
         }
-        const exe = entries.find((name) => /^(idea|webstorm|pycharm|goland|rider|clion|phpstorm|rubymine|datagrip|dataspell|aqua|rustrover)(64)?\.exe$/i.test(name));
+        const exe = entries.find((name) => /^(idea|webstorm|pycharm|goland|rider|clion|phpstorm|rubymine|datagrip|dataspell|aqua|rustrover|studio)(64)?\.exe$/i.test(name));
         if (exe) {
           resolved = path.join(binDir, exe);
           break;
@@ -163,14 +263,54 @@ function jetbrainsToolboxApps() {
     if (!resolved) continue;
     const id = 'jetbrains-' + folder.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
     if (!id || found.some((item) => item.id === id)) continue;
-    found.push({ id, label, group: 'editor', run: (dir) => ({ command: resolved, args: [dir] }) });
+    const csharpOnly = /^rider\b/i.test(label);
+    found.push({
+      id,
+      label,
+      group: csharpOnly ? 'dotnet' : 'editor',
+      ...(csharpOnly ? { requires: 'csharp' } : {}),
+      run: (dir) => ({ command: resolved, args: [csharpOnly ? (findSolutionFile(dir) || dir) : dir] }),
+    });
   }
   return found;
+}
+
+// 独立安装的 JetBrains 应用：<root>/JetBrains/<应用 版本>/bin/<exe>。
+function jetbrainsStandaloneExe(appName, exeNames) {
+  for (const root of [PROGRAM_FILES, PROGRAM_FILES_X86]) {
+    const base = path.join(root, 'JetBrains');
+    let folders = [];
+    try {
+      folders = fs.readdirSync(base);
+    } catch {
+      continue;
+    }
+    for (const folder of folders) {
+      if (!folder.toLowerCase().includes(appName)) continue;
+      for (const exe of exeNames) {
+        const candidate = path.join(base, folder, 'bin', exe);
+        if (isFile(candidate)) return candidate;
+      }
+    }
+  }
+  return null;
+}
+
+// 独立安装的 Visual Studio：<root>/Microsoft Visual Studio/<版本>/<版本类型>/Common7/IDE/devenv.exe。
+function visualStudioExe() {
+  for (const version of ['2022', '2019']) {
+    for (const edition of ['Enterprise', 'Professional', 'Community']) {
+      const candidate = path.join(PROGRAM_FILES, 'Microsoft Visual Studio', version, edition, 'Common7', 'IDE', 'devenv.exe');
+      if (isFile(candidate)) return { exe: candidate, label: `Visual Studio ${version}` };
+    }
+  }
+  return null;
 }
 
 function winApps() {
   const editors = [];
   const terminals = [];
+  const gitClients = [];
   const files = [];
 
   const vscode = firstFile([
@@ -179,6 +319,12 @@ function winApps() {
     path.join(PROGRAM_FILES_X86, 'Microsoft VS Code', 'Code.exe'),
   ]);
   if (vscode) editors.push({ id: 'vscode', label: 'Visual Studio Code', group: 'editor', run: (dir) => ({ command: vscode, args: [dir] }) });
+
+  const vscodeInsiders = firstFile([
+    LOCAL_APPDATA && path.join(LOCAL_APPDATA, 'Programs', 'Microsoft VS Code Insiders', 'Code - Insiders.exe'),
+    path.join(PROGRAM_FILES, 'Microsoft VS Code Insiders', 'Code - Insiders.exe'),
+  ]);
+  if (vscodeInsiders) editors.push({ id: 'vscode-insiders', label: 'VS Code Insiders', group: 'editor', run: (dir) => ({ command: vscodeInsiders, args: [dir] }) });
 
   const cursor = firstFile([
     LOCAL_APPDATA && path.join(LOCAL_APPDATA, 'Programs', 'cursor', 'Cursor.exe'),
@@ -199,10 +345,68 @@ function winApps() {
   ]);
   if (sublime) editors.push({ id: 'sublime', label: 'Sublime Text', group: 'editor', run: (dir) => ({ command: sublime, args: [dir] }) });
 
-  editors.push(...jetbrainsToolboxApps());
+  const zed = firstFile([
+    LOCAL_APPDATA && path.join(LOCAL_APPDATA, 'Programs', 'Zed', 'Zed.exe'),
+    path.join(PROGRAM_FILES, 'Zed', 'Zed.exe'),
+  ]) || whichExecutable(['zed']);
+  if (zed) editors.push({ id: 'zed', label: 'Zed', group: 'editor', run: (dir) => ({ command: zed, args: [dir] }) });
+
+  // VS Code 系编辑器：安装目录优先，其次 PATH 里的 CLI。
+  const addCodeEditor = (id, label, paths, names) => {
+    const exe = firstFile(paths) || whichExecutable(names);
+    if (exe) editors.push({ id, label, group: 'editor', run: (dir) => ({ command: exe, args: [dir] }) });
+  };
+  addCodeEditor('vscodium', 'VSCodium', [
+    LOCAL_APPDATA && path.join(LOCAL_APPDATA, 'Programs', 'VSCodium', 'VSCodium.exe'),
+    path.join(PROGRAM_FILES, 'VSCodium', 'VSCodium.exe'),
+  ], ['codium']);
+  addCodeEditor('trae', 'Trae', [
+    LOCAL_APPDATA && path.join(LOCAL_APPDATA, 'Programs', 'Trae', 'Trae.exe'),
+    path.join(PROGRAM_FILES, 'Trae', 'Trae.exe'),
+  ], ['trae']);
+  addCodeEditor('kiro', 'Kiro', [
+    LOCAL_APPDATA && path.join(LOCAL_APPDATA, 'Programs', 'Kiro', 'Kiro.exe'),
+    path.join(PROGRAM_FILES, 'Kiro', 'Kiro.exe'),
+  ], ['kiro']);
+  addCodeEditor('qoder', 'Qoder', [
+    LOCAL_APPDATA && path.join(LOCAL_APPDATA, 'Programs', 'Qoder', 'Qoder.exe'),
+    path.join(PROGRAM_FILES, 'Qoder', 'Qoder.exe'),
+  ], ['qoder']);
+
+  // Visual Studio 只能用解决方案文件启动，不能传目录。
+  const visualStudio = visualStudioExe();
+  if (visualStudio) {
+    editors.push({
+      id: 'visual-studio',
+      label: visualStudio.label,
+      group: 'dotnet',
+      requires: 'csharp',
+      run: (dir) => ({ command: visualStudio.exe, args: [findSolutionFile(dir) || dir] }),
+    });
+  }
+
+  const toolboxApps = jetbrainsToolboxApps();
+  editors.push(...toolboxApps);
+
+  if (!toolboxApps.some((item) => item.id === 'rider' || /^rider\b/i.test(item.label))) {
+    const rider = jetbrainsStandaloneExe('rider', ['rider64.exe', 'rider.exe']);
+    if (rider) editors.push({ id: 'rider', label: 'Rider', group: 'dotnet', requires: 'csharp', run: (dir) => ({ command: rider, args: [findSolutionFile(dir) || dir] }) });
+  }
+
+  const passenger = firstFile([
+    LOCAL_APPDATA && path.join(LOCAL_APPDATA, 'Programs', 'Passenger', 'Passenger.exe'),
+    path.join(PROGRAM_FILES, 'Passenger', 'Passenger.exe'),
+  ]) || whichExecutable(['passenger']);
+  if (passenger) editors.push({ id: 'passenger', label: 'Passenger', group: 'dotnet', requires: 'csharp', run: (dir) => ({ command: passenger, args: [dir] }) });
 
   const wt = whichExecutable(['wt']);
   if (wt) terminals.push({ id: 'windows-terminal', label: 'Windows Terminal', group: 'terminal', run: (dir) => ({ command: wt, args: ['-d', dir] }) });
+
+  const ghostty = whichExecutable(['ghostty']) || firstFile([
+    LOCAL_APPDATA && path.join(LOCAL_APPDATA, 'Programs', 'Ghostty', 'ghostty.exe'),
+    path.join(PROGRAM_FILES, 'Ghostty', 'ghostty.exe'),
+  ]);
+  if (ghostty) terminals.push({ id: 'ghostty', label: 'Ghostty', group: 'terminal', run: (dir) => ({ command: ghostty, args: [`--working-directory=${dir}`] }) });
 
   const pwsh = whichExecutable(['pwsh']);
   const powershell = pwsh || firstFile([path.join(WIN_ROOT, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')]);
@@ -225,7 +429,13 @@ function winApps() {
   const explorer = firstFile([path.join(WIN_ROOT, 'explorer.exe')]);
   if (explorer) files.push({ id: 'explorer', label: 'File Explorer', group: 'files', run: (dir) => ({ command: explorer, args: [dir] }) });
 
-  return editors.concat(terminals, files);
+  const fork = firstFile([
+    LOCAL_APPDATA && path.join(LOCAL_APPDATA, 'Fork', 'Fork.exe'),
+    path.join(PROGRAM_FILES, 'Fork', 'Fork.exe'),
+  ]);
+  if (fork) gitClients.push({ id: 'fork', label: 'Fork', group: 'git', requires: 'git', run: (dir) => ({ command: fork, args: [dir] }) });
+
+  return editors.concat(gitClients, terminals, files);
 }
 
 // ── Linux ───────────────────────────────────────────────────────────────────
@@ -244,10 +454,27 @@ function linuxApps() {
     ['webstorm', 'WebStorm', ['webstorm']],
     ['pycharm', 'PyCharm', ['pycharm']],
     ['goland', 'GoLand', ['goland']],
+    ['clion', 'CLion', ['clion']],
+    ['phpstorm', 'PhpStorm', ['phpstorm']],
+    ['rubymine', 'RubyMine', ['rubymine']],
+    ['datagrip', 'DataGrip', ['datagrip']],
+    ['dataspell', 'DataSpell', ['dataspell']],
+    ['aqua', 'Aqua', ['aqua']],
+    ['rustrover', 'RustRover', ['rustrover']],
+    ['fleet', 'Fleet', ['fleet']],
+    ['android-studio', 'Android Studio', ['studio']],
+    ['vscodium', 'VSCodium', ['codium']],
+    ['trae', 'Trae', ['trae']],
+    ['kiro', 'Kiro', ['kiro']],
+    ['qoder', 'Qoder', ['qoder']],
+    ['rider', 'Rider', ['rider'], { group: 'dotnet', requires: 'csharp', openSolution: true }],
+    ['passenger', 'Passenger', ['passenger'], { group: 'dotnet', requires: 'csharp' }],
   ];
-  for (const [id, label, names] of editorCandidates) {
+  for (const [id, label, names, extra] of editorCandidates) {
     const exe = whichExecutable(names);
-    if (exe) editors.push({ id, label, group: 'editor', run: (dir) => ({ command: exe, args: [dir] }) });
+    if (!exe) continue;
+    const { openSolution, ...rest } = extra || {};
+    editors.push({ id, label, group: 'editor', ...rest, run: (dir) => ({ command: exe, args: [openSolution ? (findSolutionFile(dir) || dir) : dir] }) });
   }
 
   const terminalCandidates = [
@@ -257,6 +484,7 @@ function linuxApps() {
     ['kitty', 'kitty', ['kitty'], (dir) => ['--directory', dir]],
     ['alacritty', 'Alacritty', ['alacritty'], (dir) => ['--working-directory', dir]],
     ['wezterm', 'WezTerm', ['wezterm'], (dir) => ['start', '--cwd', dir]],
+    ['ghostty', 'Ghostty', ['ghostty'], (dir) => [`--working-directory=${dir}`]],
     ['foot', 'foot', ['foot'], (dir) => ['--working-directory', dir]],
   ];
   for (const [id, label, names, argsFor] of terminalCandidates) {
@@ -344,10 +572,16 @@ async function handle(method, params) {
   const args = params && typeof params === 'object' ? params : {};
 
   if (method === 'apps/list') {
+    const target = validatedDirectory(args.path);
+    const features = projectFeatures(target);
     return {
       ok: true,
       platform: PLATFORM,
-      apps: detectAppsCached(false).map(({ id, label, group }) => ({ id, label, group })),
+      features,
+      csharp: features.csharp,
+      apps: detectAppsCached(false).map(({ id, label, group, requires }) => (
+        requires ? { id, label, group, requires } : { id, label, group }
+      )),
     };
   }
 
@@ -359,6 +593,8 @@ async function handle(method, params) {
     let app = detectAppsCached(false).find((item) => item.id === args.app);
     if (!app) app = detectAppsCached(true).find((item) => item.id === args.app);
     if (!app) return { ok: false, code: 'APP_NOT_AVAILABLE' };
+    // 按项目类型限定应用（C# IDE、Git 客户端）；菜单可能来自旧缓存，这里再核一次。
+    if (app.requires && !meetsRequirement(dir, app.requires)) return { ok: false, code: 'REQUIREMENT_UNMET' };
     try {
       const { command, args: spawnArgs } = app.run(dir);
       await launchDetached(command, spawnArgs);

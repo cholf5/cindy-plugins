@@ -36,10 +36,18 @@ function fail(callId, code) {
 
 async function handleToolCall(msg) {
   if (msg.tool === 'list_apps') {
+    const args = msg.args || {};
+    const dir = typeof args.path === 'string' && args.path.length > 0 && args.path.length <= MAX_PATH ? args.path : null;
     try {
-      const data = await callWorker('apps/list', {});
+      const data = await callWorker('apps/list', dir ? { path: dir } : {});
       if (data && data.ok && Array.isArray(data.apps)) {
-        await ok(msg.callId, { ok: true, apps: data.apps, platform: data.platform });
+        await ok(msg.callId, {
+          ok: true,
+          apps: data.apps,
+          platform: data.platform,
+          csharp: data.csharp === true,
+          features: data.features && typeof data.features === 'object' ? data.features : { csharp: data.csharp === true, git: false },
+        });
       } else {
         await fail(msg.callId, (data && data.code) || 'LIST_FAILED');
       }

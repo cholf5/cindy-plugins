@@ -31,6 +31,8 @@
   .empty{padding:12px 9px;font-size:12.5px;color:var(--color-text-secondary,CanvasText);line-height:1.5}
   .retry{margin:0 4px;padding:4px 10px;border:1px solid var(--color-border-primary,rgba(127,127,127,.35));border-radius:7px;background:transparent;color:inherit;font:inherit;font-size:12px;cursor:pointer}
   .retry:hover{background:var(--color-background-secondary,rgba(127,127,127,.14))}
+  .foot{margin-top:4px;padding-top:4px;border-top:1px solid var(--color-border-primary,rgba(127,127,127,.18))}
+  .foot[hidden]{display:none}
   .skeleton{height:34px;margin:4px 6px;border-radius:8px;background:var(--color-background-secondary,rgba(127,127,127,.12));animation:pulse 1.1s ease-in-out infinite}
   @keyframes pulse{0%,100%{opacity:.45}50%{opacity:1}}
   @media (prefers-reduced-motion: reduce){.skeleton{animation:none}.row{transition:none}}
@@ -40,6 +42,7 @@
 <div class="wrap">
   <div class="head"><span class="t" id="head-title">Open in</span><span class="path" id="path" title=""></span></div>
   <div id="list" role="menu" aria-labelledby="head-title"></div>
+  <div class="foot" id="foot" role="menu" aria-label="Path actions" hidden></div>
   <div class="status" id="status" role="status"></div>
 </div>
 <script type="module">
@@ -48,14 +51,18 @@ import { App } from '@modelcontextprotocol/ext-apps';
 const mcp = new App({ name: 'Open in', version: '1.0.0' }, {}, { autoResize: true });
 const controller = new AbortController();
 const listEl = document.querySelector('#list');
+const footEl = document.querySelector('#foot');
 const statusEl = document.querySelector('#status');
 const pathEl = document.querySelector('#path');
 const headTitle = document.querySelector('#head-title');
 
 const ICONS = {
   editor: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18-6-6 6-6"/><path d="m15 6 6 6-6 6"/></svg>',
+  dotnet: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9h16"/><path d="M4 15h16"/><path d="M10 3 8 21"/><path d="m16 3-2 18"/></svg>',
+  git: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="5" r="2.4"/><circle cx="6" cy="19" r="2.4"/><circle cx="18" cy="9" r="2.4"/><path d="M6 7.4v9.2"/><path d="M18 11.4c0 3.2-3 3.6-6 3.6H6"/></svg>',
   terminal: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m4 17 6-6-6-6"/><path d="M12 19h8"/></svg>',
   files: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
+  copy: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
 };
 
 const STRINGS = {
@@ -66,7 +73,10 @@ const STRINGS = {
     opening: 'Opening {app}…', opened: 'Opened in {app}.',
     openFailed: 'Could not open the folder in {app}.', dirMissing: 'This folder is not available on this computer.',
     appGone: 'That app is no longer available.', retry: 'Retry', meta: 'Open',
-    editors: 'Editors & IDEs', terminals: 'Terminals', files: 'File manager',
+    editors: 'Editors & IDEs', dotnet: 'C# IDEs', git: 'Git', terminals: 'Terminals', files: 'File manager',
+    copyPath: 'Copy path', copied: 'Path copied to the clipboard.', copyFailed: 'Could not copy the path to the clipboard.',
+    notCSharp: 'This folder is not a C# project, so the C# IDE is hidden.',
+    notGitRepo: 'This folder is not a Git repository, so the Git client is hidden.',
   },
   zh: {
     title: 'Open in', noFolder: '当前任务还没有项目目录。',
@@ -75,11 +85,14 @@ const STRINGS = {
     opening: '正在用 {app} 打开…', opened: '已在 {app} 中打开。',
     openFailed: '无法用 {app} 打开该目录。', dirMissing: '该目录在这台电脑上不存在。',
     appGone: '这个应用已不可用。', retry: '重试', meta: '打开',
-    editors: '编辑器与 IDE', terminals: '终端', files: '文件管理器',
+    editors: '编辑器与 IDE', dotnet: 'C# IDE', git: 'Git 客户端', terminals: '终端', files: '文件管理器',
+    copyPath: '复制路径', copied: '已复制路径。', copyFailed: '复制路径失败。',
+    notCSharp: '该目录不是 C# 项目，已隐藏 C# IDE。',
+    notGitRepo: '该目录不是 Git 仓库，已隐藏 Git 客户端。',
   },
 };
 
-const GROUP_ORDER = [['editor', 'editors'], ['terminal', 'terminals'], ['files', 'files']];
+const GROUP_ORDER = [['editor', 'editors'], ['dotnet', 'dotnet'], ['git', 'git'], ['terminal', 'terminals'], ['files', 'files']];
 
 let context = {};
 let locale = 'en';
@@ -92,7 +105,8 @@ let inFlight = null;
 let inFlightDir = null;
 let loadSeq = 0;
 let renderedKey = '';
-const CACHE_KEY = 'open-in.apps.v1';
+let cacheSnapshot = null;
+const CACHE_KEY = 'open-in.apps.v4';
 const CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 function fmt(template, values) {
@@ -103,30 +117,47 @@ function pickLocale(raw) {
   return String(raw || '').toLowerCase().startsWith('zh') ? 'zh' : 'en';
 }
 
-const APP_GROUPS = ['editor', 'terminal', 'files'];
+const APP_GROUPS = ['editor', 'dotnet', 'git', 'terminal', 'files'];
+const APP_REQUIREMENTS = ['csharp', 'git'];
 
 function sanitizeApps(apps) {
   return (Array.isArray(apps) ? apps : [])
     .filter((item) => item && typeof item.id === 'string' && typeof item.label === 'string' && APP_GROUPS.includes(item.group))
-    .map(({ id, label, group }) => ({ id, label, group }));
+    .map(({ id, label, group, requires }) => (
+      APP_REQUIREMENTS.includes(requires) ? { id, label, group, requires } : { id, label, group }
+    ));
 }
 
-/** 上次成功检测到的应用列表；用于弹层再次打开时先出内容，再后台刷新。 */
-function readCachedApps() {
+function normalizeFeatures(source) {
+  const raw = source && typeof source === 'object' ? source : {};
+  return { csharp: raw.csharp === true, git: raw.git === true };
+}
+
+/** 按项目类型过滤：C# IDE、Git 客户端只在满足条件的目录下出现。 */
+function filterApps(apps, features) {
+  return apps.filter((item) => !item.requires || features[item.requires] === true);
+}
+
+/** 上次成功检测到的应用列表与项目判定；用于弹层再次打开时先出内容，再后台刷新。 */
+function readCachedSnapshot() {
   try {
     const raw = localStorage.getItem(CACHE_KEY);
-    if (!raw) return [];
+    if (!raw) return null;
     const data = JSON.parse(raw);
-    if (!data || data.v !== 1 || typeof data.at !== 'number' || Date.now() - data.at > CACHE_TTL_MS) return [];
-    return sanitizeApps(data.apps);
+    if (!data || data.v !== 4 || typeof data.at !== 'number' || Date.now() - data.at > CACHE_TTL_MS) return null;
+    return {
+      apps: sanitizeApps(data.apps),
+      dir: typeof data.dir === 'string' ? data.dir : null,
+      features: normalizeFeatures(data.features),
+    };
   } catch {
-    return [];
+    return null;
   }
 }
 
-function writeCachedApps(apps) {
+function writeCachedSnapshot(snapshot) {
   try {
-    localStorage.setItem(CACHE_KEY, JSON.stringify({ v: 1, at: Date.now(), apps }));
+    localStorage.setItem(CACHE_KEY, JSON.stringify({ v: 4, at: Date.now(), ...snapshot }));
   } catch {
     // 页面存储不可用时只是少一层加速，不影响功能。
   }
@@ -176,6 +207,60 @@ function renderHead() {
   headTitle.textContent = t.title;
   pathEl.textContent = dir || '';
   pathEl.title = dir || '';
+  renderFoot();
+}
+
+/** 底部固定动作：复制当前目录路径。 */
+function renderFoot() {
+  footEl.replaceChildren();
+  footEl.hidden = !dir;
+  if (!dir) return;
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'row';
+  button.id = 'copy-path';
+  button.setAttribute('role', 'menuitem');
+  const icon = document.createElement('span');
+  icon.className = 'ico';
+  icon.innerHTML = ICONS.copy;
+  const label = document.createElement('span');
+  label.className = 'lbl';
+  label.textContent = t.copyPath;
+  button.append(icon, label);
+  button.addEventListener('click', () => void copyPath());
+  footEl.append(button);
+}
+
+/** 剪贴板写入：优先异步剪贴板 API，被权限挡住时退回隐藏文本域选区复制。 */
+async function writeClipboard(text) {
+  try {
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // 退回到选区复制。
+  }
+  try {
+    const area = document.createElement('textarea');
+    area.value = text;
+    area.setAttribute('readonly', '');
+    area.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;border:0;padding:0';
+    document.body.append(area);
+    area.select();
+    area.setSelectionRange(0, text.length);
+    const copied = typeof document.execCommand === 'function' && document.execCommand('copy');
+    area.remove();
+    return !!copied;
+  } catch {
+    return false;
+  }
+}
+
+async function copyPath() {
+  if (!dir) return;
+  const copied = await writeClipboard(dir);
+  setStatus(copied ? t.copied : t.copyFailed, copied ? 'ok' : 'error');
 }
 
 function renderEmpty(message, withRetry) {
@@ -264,10 +349,11 @@ async function loadApps() {
     renderSkeleton();
     setStatus(t.loading, '');
   }
+  const targetDir = dir;
   inFlight = (async () => {
     try {
       const result = await mcp.callServerTool(
-        { name: 'list_apps', arguments: {} },
+        { name: 'list_apps', arguments: { path: targetDir } },
         { timeout: 60 * 1000, maxTotalTimeout: 60 * 1000, signal: controller.signal },
       );
       const data = resultData(result);
@@ -275,9 +361,12 @@ async function loadApps() {
         throw Object.assign(new Error('LIST_FAILED'), { code: data && data.code });
       }
       if (seq !== loadSeq) return;
-      appList = sanitizeApps(data.apps);
+      const apps = sanitizeApps(data.apps);
+      const features = normalizeFeatures(data.features || { csharp: data.csharp === true });
+      cacheSnapshot = { apps, dir: targetDir, features };
+      writeCachedSnapshot(cacheSnapshot);
+      appList = filterApps(apps, features);
       loaded = true;
-      writeCachedApps(appList);
       renderApps();
       setStatus('');
     } catch (error) {
@@ -303,6 +392,7 @@ function errorMessage(code, app) {
   switch (code) {
     case 'DIR_UNAVAILABLE': return t.dirMissing;
     case 'APP_NOT_AVAILABLE': return t.appGone;
+    case 'REQUIREMENT_UNMET': return app && app.requires === 'git' ? t.notGitRepo : t.notCSharp;
     case 'NODE_UNAVAILABLE':
     case 'PROCESS_START_FAILED':
     case 'TIMEOUT': return t.nodeMissing;
@@ -332,7 +422,10 @@ async function openWith(app, button) {
     if (error && error.code === 'APP_NOT_AVAILABLE') {
       // 应用已被卸载：从列表和缓存里移除，下次打开不会再显示。
       appList = appList.filter((item) => item.id !== app.id);
-      writeCachedApps(appList);
+      if (cacheSnapshot) {
+        cacheSnapshot = { ...cacheSnapshot, apps: cacheSnapshot.apps.filter((item) => item.id !== app.id) };
+        writeCachedSnapshot(cacheSnapshot);
+      }
       renderedKey = '';
       renderApps();
     }
@@ -364,6 +457,11 @@ function update() {
   const nextDir = currentDir();
   const dirChanged = nextDir !== dir;
   dir = nextDir;
+  if (dirChanged && cacheSnapshot && cacheSnapshot.dir === dir) {
+    // 缓存里正好有这个目录的判定，先按它显示 C# IDE，列表刷新后再校正。
+    const cachedApps = filterApps(cacheSnapshot.apps, cacheSnapshot.features);
+    if (cachedApps.length) appList = cachedApps;
+  }
   renderHead();
   if (appList.length) renderApps();
   if (!loaded || languageChanged || dirChanged) {
@@ -378,8 +476,12 @@ mcp.onteardown = async () => {
 };
 
 // 先用上次的列表把菜单画出来，连上宿主后再后台刷新，重复打开时不再等检测。
-appList = readCachedApps();
-if (appList.length) renderApps();
+cacheSnapshot = readCachedSnapshot();
+if (cacheSnapshot) {
+  // 连接前还不知道当前目录，先只显示不依赖项目类型的应用。
+  appList = filterApps(cacheSnapshot.apps, normalizeFeatures(null));
+  if (appList.length) renderApps();
+}
 
 try {
   await mcp.connect();

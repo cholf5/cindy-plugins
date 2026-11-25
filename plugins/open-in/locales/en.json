@@ -1,10 +1,16 @@
 {
   "name": "Open In",
-  "description": "Open the current project folder in your installed editors, IDEs, terminals and file manager from the task header.",
-  "whenToUse": "Use when the user wants to open the current task's project folder in VS Code, Cursor, another IDE, a terminal or the file manager. Local projects only; remote tasks are not supported.",
+  "description": "Open the current project folder in your installed editors, IDEs, terminals and file manager from the status bar under the composer, or copy its path.",
+  "whenToUse": "Use when the user wants to open the current task's project folder in VS Code, Cursor, another IDE, a terminal or the file manager, or to copy the folder path. Local projects only; remote tasks are not supported.",
   "tools": {
     "list_apps": {
-      "description": "List installed apps on the executing computer that can open the project folder. Called only by the plugin menu page."
+      "description": "List installed apps on the executing computer that can open the project folder, and report whether the task folder is a C# project or a Git repository. Called only by the plugin menu page.",
+      "parameters": {
+        "/properties/path": {
+          "title": "Project folder",
+          "description": "Absolute path of the current task's project folder, used to decide whether C#-only apps should be listed."
+        }
+      }
     },
     "open_in": {
       "description": "Open the task's project folder in a specified installed app. Called only by the plugin menu page.",
