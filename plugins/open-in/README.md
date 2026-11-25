@@ -18,7 +18,7 @@ Only apps that are actually detected on this computer:
 - **Copy path** at the bottom of the menu copies the project folder path to the clipboard.
 - Remote tasks and device-link tasks are not supported. Cindy hides the entry for them, and the plugin also refuses a folder that does not exist locally.
 - If the app was removed between listing and clicking, the menu reports it as unavailable instead of running anything else.
-- The plugin stays resident while enabled and prewarms one app detection at startup, so opening the menu does not rescan every time. Each popover is a fresh sandbox page, so the menu reserves its final height with a skeleton and fills in the list as soon as it connects.
+- The plugin stays resident while enabled and prewarms one app detection at startup. The detected list is also kept in the plugin's own storage, so reopening the menu never re-runs the scan; a slightly stale list is shown immediately and refreshed in the background. Each popover is a fresh sandbox page, so the menu reserves its final height with a skeleton and fills in the list as soon as it connects.
 
 ## Permissions
 

@@ -7,7 +7,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const readline = require('node:readline');
-const { spawn } = require('node:child_process');
+const { spawn, execFileSync } = require('node:child_process');
 
 const PLATFORM = process.platform;
 const IS_WIN = PLATFORM === 'win32';
@@ -31,7 +31,8 @@ function isDir(candidate) {
 
 function isExecutable(candidate) {
   try {
-    fs.accessSync(candidate, fs.constants.X_OK);
+    // Windows 上 X_OK 没有意义，少一次 access 就少一次杀毒软件扫描。
+    if (!IS_WIN) fs.accessSync(candidate, fs.constants.X_OK);
     return fs.statSync(candidate).isFile();
   } catch {
     return false;
@@ -205,14 +206,86 @@ function macApps() {
 }
 
 // ── Windows ─────────────────────────────────────────────────────────────────
-const WIN_ROOT = process.env.SystemRoot || process.env.SYSTEMROOT || 'C:\\Windows';
-const LOCAL_APPDATA = process.env.LOCALAPPDATA || '';
-const PROGRAM_FILES = process.env.ProgramFiles || process.env.PROGRAMFILES || 'C:\\Program Files';
-const PROGRAM_FILES_X86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
+// 环境变量缺省时按 Windows 的默认位置兜底：某些启动方式下插件进程拿到的
+// 环境不完整，直接读空值会让整类「用户级安装」的应用（VS Code 默认就是）
+// 凭空消失。
+const SYSTEM_DRIVE = process.env.SystemDrive || 'C:';
+const WIN_ROOT = process.env.SystemRoot || process.env.SYSTEMROOT || `${SYSTEM_DRIVE}\\Windows`;
+const LOCAL_APPDATA = process.env.LOCALAPPDATA || (IS_WIN ? path.join(os.homedir(), 'AppData', 'Local') : '');
+const PROGRAM_FILES = process.env.ProgramFiles || process.env.ProgramW6432 || path.join(SYSTEM_DRIVE, 'Program Files');
+const PROGRAM_FILES_X86 = process.env['ProgramFiles(x86)'] || path.join(SYSTEM_DRIVE, 'Program Files (x86)');
 
 function firstFile(candidates) {
   for (const candidate of candidates) {
     if (candidate && isFile(candidate)) return candidate;
+  }
+  return null;
+}
+
+function expandWindowsEnv(value) {
+  return String(value).replace(/%([^%]+)%/g, (match, name) => {
+    const hit = process.env[name] || process.env[String(name).toUpperCase()];
+    return hit || match;
+  });
+}
+
+// 安装器（VS Code / Cursor 等）都会写 App Paths。整棵子树一次查完并缓存，
+// 固定路径都没命中的编辑器才去这里找，避免每个应用各拉一次 reg.exe。
+let appPathsCache;
+function windowsAppPaths() {
+  if (appPathsCache) return appPathsCache;
+  const found = new Map();
+  if (!IS_WIN) {
+    appPathsCache = found;
+    return found;
+  }
+  const reg = path.join(WIN_ROOT, 'System32', 'reg.exe');
+  for (const hive of ['HKCU', 'HKLM']) {
+    let output;
+    try {
+      output = execFileSync(reg, ['query', `${hive}\\Software\\Microsoft\\Windows\\CurrentVersion\\App Paths`, '/s'],
+        { encoding: 'utf8', timeout: 5000, windowsHide: true });
+    } catch {
+      continue;
+    }
+    let current = null;
+    for (const line of output.split(/\r?\n/)) {
+      const key = line.match(/\\App Paths\\([^\\]+)\s*$/);
+      if (key) {
+        current = key[1].toLowerCase();
+        continue;
+      }
+      const value = current && line.match(/REG_(?:EXPAND_)?SZ\s+(.+?)\s*$/);
+      if (!value) continue;
+      const candidate = expandWindowsEnv(value[1].replace(/^"|"$/g, ''));
+      if (!found.has(current) && isFile(candidate)) found.set(current, candidate);
+    }
+  }
+  appPathsCache = found;
+  return found;
+}
+
+function registryAppExe(exeNames) {
+  const paths = windowsAppPaths();
+  for (const exe of exeNames) {
+    const hit = paths.get(String(exe).toLowerCase());
+    if (hit) return hit;
+  }
+  return null;
+}
+
+// PATH 里的 code.cmd 一类壳脚本在 <安装目录>\bin 下，真正的 exe 在上一级或两级。
+function shimExe(shimNames, exeNames) {
+  for (const dir of PATH_DIRS) {
+    for (const shim of shimNames) {
+      if (!isFile(path.join(dir, shim))) continue;
+      for (const hops of ['..', path.join('..', '..')]) {
+        for (const exe of exeNames) {
+          const candidate = path.resolve(dir, hops, exe);
+          if (isFile(candidate)) return candidate;
+        }
+      }
+    }
   }
   return null;
 }
@@ -317,26 +390,28 @@ function winApps() {
     LOCAL_APPDATA && path.join(LOCAL_APPDATA, 'Programs', 'Microsoft VS Code', 'Code.exe'),
     path.join(PROGRAM_FILES, 'Microsoft VS Code', 'Code.exe'),
     path.join(PROGRAM_FILES_X86, 'Microsoft VS Code', 'Code.exe'),
-  ]);
+    path.join(os.homedir(), 'scoop', 'apps', 'vscode', 'current', 'Code.exe'),
+  ]) || shimExe(['code.cmd', 'code'], ['Code.exe']) || registryAppExe(['Code.exe']);
   if (vscode) editors.push({ id: 'vscode', label: 'Visual Studio Code', group: 'editor', run: (dir) => ({ command: vscode, args: [dir] }) });
 
   const vscodeInsiders = firstFile([
     LOCAL_APPDATA && path.join(LOCAL_APPDATA, 'Programs', 'Microsoft VS Code Insiders', 'Code - Insiders.exe'),
     path.join(PROGRAM_FILES, 'Microsoft VS Code Insiders', 'Code - Insiders.exe'),
-  ]);
+    path.join(os.homedir(), 'scoop', 'apps', 'vscode-insiders', 'current', 'Code - Insiders.exe'),
+  ]) || shimExe(['code-insiders.cmd'], ['Code - Insiders.exe']) || registryAppExe(['Code - Insiders.exe']);
   if (vscodeInsiders) editors.push({ id: 'vscode-insiders', label: 'VS Code Insiders', group: 'editor', run: (dir) => ({ command: vscodeInsiders, args: [dir] }) });
 
   const cursor = firstFile([
     LOCAL_APPDATA && path.join(LOCAL_APPDATA, 'Programs', 'cursor', 'Cursor.exe'),
     LOCAL_APPDATA && path.join(LOCAL_APPDATA, 'Programs', 'Cursor', 'Cursor.exe'),
     path.join(PROGRAM_FILES, 'Cursor', 'Cursor.exe'),
-  ]);
+  ]) || shimExe(['cursor.cmd'], ['Cursor.exe']) || registryAppExe(['Cursor.exe']);
   if (cursor) editors.push({ id: 'cursor', label: 'Cursor', group: 'editor', run: (dir) => ({ command: cursor, args: [dir] }) });
 
   const windsurf = firstFile([
     LOCAL_APPDATA && path.join(LOCAL_APPDATA, 'Programs', 'Windsurf', 'Windsurf.exe'),
     path.join(PROGRAM_FILES, 'Windsurf', 'Windsurf.exe'),
-  ]);
+  ]) || shimExe(['windsurf.cmd'], ['Windsurf.exe']) || registryAppExe(['Windsurf.exe']);
   if (windsurf) editors.push({ id: 'windsurf', label: 'Windsurf', group: 'editor', run: (dir) => ({ command: windsurf, args: [dir] }) });
 
   const sublime = firstFile([
@@ -351,27 +426,30 @@ function winApps() {
   ]) || whichExecutable(['zed']);
   if (zed) editors.push({ id: 'zed', label: 'Zed', group: 'editor', run: (dir) => ({ command: zed, args: [dir] }) });
 
-  // VS Code 系编辑器：安装目录优先，其次 PATH 里的 CLI。
-  const addCodeEditor = (id, label, paths, names) => {
-    const exe = firstFile(paths) || whichExecutable(names);
+  // VS Code 系编辑器：安装目录优先，其次 PATH 里的 CLI，最后读 App Paths。
+  const addCodeEditor = (id, label, paths, names, exeName) => {
+    const exe = firstFile(paths)
+      || whichExecutable(names)
+      || shimExe(names.map((name) => `${name}.cmd`), [exeName])
+      || registryAppExe([exeName]);
     if (exe) editors.push({ id, label, group: 'editor', run: (dir) => ({ command: exe, args: [dir] }) });
   };
   addCodeEditor('vscodium', 'VSCodium', [
     LOCAL_APPDATA && path.join(LOCAL_APPDATA, 'Programs', 'VSCodium', 'VSCodium.exe'),
     path.join(PROGRAM_FILES, 'VSCodium', 'VSCodium.exe'),
-  ], ['codium']);
+  ], ['codium'], 'VSCodium.exe');
   addCodeEditor('trae', 'Trae', [
     LOCAL_APPDATA && path.join(LOCAL_APPDATA, 'Programs', 'Trae', 'Trae.exe'),
     path.join(PROGRAM_FILES, 'Trae', 'Trae.exe'),
-  ], ['trae']);
+  ], ['trae'], 'Trae.exe');
   addCodeEditor('kiro', 'Kiro', [
     LOCAL_APPDATA && path.join(LOCAL_APPDATA, 'Programs', 'Kiro', 'Kiro.exe'),
     path.join(PROGRAM_FILES, 'Kiro', 'Kiro.exe'),
-  ], ['kiro']);
+  ], ['kiro'], 'Kiro.exe');
   addCodeEditor('qoder', 'Qoder', [
     LOCAL_APPDATA && path.join(LOCAL_APPDATA, 'Programs', 'Qoder', 'Qoder.exe'),
     path.join(PROGRAM_FILES, 'Qoder', 'Qoder.exe'),
-  ], ['qoder']);
+  ], ['qoder'], 'Qoder.exe');
 
   // Visual Studio 只能用解决方案文件启动，不能传目录。
   const visualStudio = visualStudioExe();
@@ -504,25 +582,50 @@ function detectApps() {
   return linuxApps();
 }
 
-// 菜单每次打开都会请求一次列表；检测本身要逐个探测路径，重复执行没有意义。
-// 进程内缓存一小段时间，并把 open_in 也接到同一份结果上（找不到应用时才强制重扫）。
-const DETECT_TTL_MS = 60 * 1000;
+// 菜单每次打开都会请求一次列表，检测本身要逐个探测路径；Windows 上杀毒软件会
+// 拖慢每次 stat，整机扫描可能到秒级。因此分两层：新鲜期内直接返回；过期后仍先
+// 交回旧结果，再在后台重扫，打开菜单永远不等检测。
+const DETECT_TTL_MS = 10 * 60 * 1000;
 let detectCache = null;
+let detectRefreshing = null;
 
-function detectAppsCached(force) {
-  const now = Date.now();
-  if (!force && detectCache && now - detectCache.at < DETECT_TTL_MS) return detectCache.apps;
+function runDetect() {
+  const started = Date.now();
   const apps = detectApps();
-  detectCache = { at: now, apps };
-  if (Date.now() - now >= 20) {
-    process.stderr.write(`[open-in] detect apps: ${apps.length} found in ${Date.now() - now}ms (${PLATFORM})\n`);
+  detectCache = { at: Date.now(), apps };
+  const elapsed = Date.now() - started;
+  if (elapsed >= 20) {
+    process.stderr.write(`[open-in] detect apps: ${apps.length} found in ${elapsed}ms (${PLATFORM})\n`);
   }
   return apps;
 }
 
+function refreshDetectInBackground() {
+  if (detectRefreshing) return detectRefreshing;
+  // setImmediate 让当前请求的响应先写出去，扫描在之后才开始。
+  detectRefreshing = new Promise((resolve) => setImmediate(resolve))
+    .then(() => runDetect())
+    .catch(() => null)
+    .finally(() => { detectRefreshing = null; });
+  return detectRefreshing;
+}
+
+// allowStale：有旧结果就先交卷并在后台刷新；完全没有结果时才同步扫描。
+function detectAppsCached(options = {}) {
+  const { force = false, allowStale = false } = options;
+  if (!force && detectCache) {
+    if (Date.now() - detectCache.at < DETECT_TTL_MS) return detectCache.apps;
+    if (allowStale) {
+      void refreshDetectInBackground();
+      return detectCache.apps;
+    }
+  }
+  return runDetect();
+}
+
 // 常驻启动时先预热一次检测，第一个菜单请求直接命中缓存。
 try {
-  detectAppsCached(false);
+  runDetect();
 } catch {
   // 预热失败不影响后续按需检测。
 }
@@ -579,19 +682,28 @@ async function handle(method, params) {
       platform: PLATFORM,
       features,
       csharp: features.csharp,
-      apps: detectAppsCached(false).map(({ id, label, group, requires }) => (
+      apps: detectAppsCached({ allowStale: true }).map(({ id, label, group, requires }) => (
         requires ? { id, label, group, requires } : { id, label, group }
       )),
     };
+  }
+
+  // 只做目录判定（C# 解决方案 / Git 仓库），比整机检测便宜得多；缓存命中时
+  // 菜单可以只问这一下。
+  if (method === 'apps/features') {
+    const target = validatedDirectory(args.path);
+    const features = projectFeatures(target);
+    return { ok: true, platform: PLATFORM, features, csharp: features.csharp };
   }
 
   if (method === 'apps/open') {
     if (typeof args.app !== 'string' || !args.app) return { ok: false, code: 'INVALID_ARGS' };
     const dir = validatedDirectory(args.path);
     if (!dir) return { ok: false, code: 'DIR_UNAVAILABLE' };
-    // 正常情况下直接复用列表结果，避免再次扫描；只有应用不在缓存里才重扫一次。
-    let app = detectAppsCached(false).find((item) => item.id === args.app);
-    if (!app) app = detectAppsCached(true).find((item) => item.id === args.app);
+    // 直接复用列表结果（即使已经过期），避免点一次就重扫；只有应用不在
+    // 缓存里才强制重扫一次。
+    let app = detectAppsCached({ allowStale: true }).find((item) => item.id === args.app);
+    if (!app) app = detectAppsCached({ force: true }).find((item) => item.id === args.app);
     if (!app) return { ok: false, code: 'APP_NOT_AVAILABLE' };
     // 按项目类型限定应用（C# IDE、Git 客户端）；菜单可能来自旧缓存，这里再核一次。
     if (app.requires && !meetsRequirement(dir, app.requires)) return { ok: false, code: 'REQUIREMENT_UNMET' };
@@ -601,7 +713,10 @@ async function handle(method, params) {
       return { ok: true };
     } catch (error) {
       // 应用刚被卸载/移动时启动会报 ENOENT，丢掉旧缓存让下次列表重新检测。
-      if (error && error.code === 'ENOENT') detectCache = null;
+      if (error && error.code === 'ENOENT') {
+        detectCache = null;
+        appPathsCache = undefined;
+      }
       return { ok: false, code: 'OPEN_FAILED' };
     }
   }

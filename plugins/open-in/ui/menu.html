@@ -352,9 +352,13 @@ async function loadApps() {
   const seq = ++loadSeq;
   inFlightDir = dir;
   const hadList = appList.length > 0;
+  let loadingTimer;
   if (!hadList) {
     renderSkeleton(6);
-    setStatus(t.loading, '');
+    // 命中缓存时结果几十毫秒就回来了，不必让「正在检测」闪一下。
+    loadingTimer = setTimeout(() => {
+      if (seq === loadSeq) setStatus(t.loading, '');
+    }, 450);
   }
   const targetDir = dir;
   inFlight = (async () => {
@@ -389,6 +393,7 @@ async function loadApps() {
       renderEmpty(code === 'NODE_UNAVAILABLE' || code === 'TIMEOUT' ? t.nodeMissing : t.listFailed, true);
       setStatus('');
     } finally {
+      clearTimeout(loadingTimer);
       if (seq === loadSeq) inFlight = null;
     }
   })();
