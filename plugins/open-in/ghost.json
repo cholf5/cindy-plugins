@@ -5,7 +5,7 @@
   "name": "Open In",
   "description": "在输入框下方的状态栏用本机第三方应用打开当前项目目录，也可以复制目录路径；自动检测已安装的编辑器、IDE、终端和文件管理器。",
   "whenToUse": "想把当前任务的项目目录在 VS Code、Cursor、其他 IDE、终端或文件管理器里打开，或想复制目录路径时找我；只支持本机项目，远程任务不适用。",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "entry": "main.js",
   "launch": "resident",
   "command": "openin",

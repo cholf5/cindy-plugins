@@ -10,6 +10,9 @@
   html,body{margin:0;padding:0;background:transparent}
   body{font:13px/1.45 var(--font-sans,system-ui,-apple-system,"Segoe UI",sans-serif);color:var(--color-text-primary,CanvasText);-webkit-font-smoothing:antialiased}
   .wrap{padding:2px;min-width:220px}
+  /* 弹层按内容高度显示；加载期间先占住接近最终的高度，
+     否则首帧只有标题行，弹层会先塌成一条再撑开。 */
+  .wrap.is-loading{min-height:320px}
   .head{display:flex;align-items:baseline;gap:8px;padding:4px 8px 6px;min-width:0}
   .head .t{flex:none;font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--color-text-secondary,CanvasText);opacity:.75}
   .head .path{flex:1;min-width:0;font-size:11px;color:var(--color-text-secondary,CanvasText);opacity:.7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:var(--font-mono,ui-monospace,SFMono-Regular,Menlo,monospace)}
@@ -50,6 +53,7 @@ import { App } from '@modelcontextprotocol/ext-apps';
 
 const mcp = new App({ name: 'Open in', version: '1.0.0' }, {}, { autoResize: true });
 const controller = new AbortController();
+const wrapEl = document.querySelector('.wrap');
 const listEl = document.querySelector('#list');
 const footEl = document.querySelector('#foot');
 const statusEl = document.querySelector('#status');
@@ -264,6 +268,7 @@ async function copyPath() {
 }
 
 function renderEmpty(message, withRetry) {
+  wrapEl.classList.remove('is-loading');
   renderedKey = '';
   listEl.replaceChildren();
   const empty = document.createElement('div');
@@ -280,10 +285,11 @@ function renderEmpty(message, withRetry) {
   }
 }
 
-function renderSkeleton() {
+function renderSkeleton(count = 3) {
+  wrapEl.classList.add('is-loading');
   renderedKey = '';
   listEl.replaceChildren();
-  for (let index = 0; index < 3; index += 1) {
+  for (let index = 0; index < count; index += 1) {
     const row = document.createElement('div');
     row.className = 'skeleton';
     listEl.append(row);
@@ -293,6 +299,7 @@ function renderSkeleton() {
 function renderApps() {
   const key = locale + '|' + appList.map((item) => `${item.id}:${item.group}`).join('|');
   if (key === renderedKey && listEl.querySelector('.row')) return;
+  wrapEl.classList.remove('is-loading');
   renderedKey = key;
   listEl.replaceChildren();
   if (!appList.length) {
@@ -346,7 +353,7 @@ async function loadApps() {
   inFlightDir = dir;
   const hadList = appList.length > 0;
   if (!hadList) {
-    renderSkeleton();
+    renderSkeleton(6);
     setStatus(t.loading, '');
   }
   const targetDir = dir;
@@ -482,6 +489,10 @@ if (cacheSnapshot) {
   appList = filterApps(cacheSnapshot.apps, normalizeFeatures(null));
   if (appList.length) renderApps();
 }
+// 没有可先展示的列表时，也在连接前把骨架和高度画好：
+// 页面第一次上报尺寸发生在 initialize 之后，若此时只剩标题行，
+// 弹层会先塌成很短的一条，等列表回来再撑开。
+if (!appList.length) renderSkeleton(6);
 
 try {
   await mcp.connect();
